@@ -178,6 +178,8 @@ MINIO_SECRET_KEY=minioadmin123
 MINIO_BUCKET=bucket
 MINIO_USE_SSL=0
 
+AS credenciais do Bucket minio eu coloquei diretamente aqui, pois posteriormente irei exckuir (então não há dados sensíveis)
+
 ---
 
 ## Regras de negócio
