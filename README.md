@@ -240,7 +240,7 @@ cd frontend
 # 1. Instalar dependências
 npm install
 
-# 2. Iniciar em modo de desenvolvimento
+# 2. Iniciar aplicação
 npx vite
 ```
 
