@@ -116,6 +116,68 @@ forumtech/
     └── vite.config.ts
 ```
 
+## Configuração
+
+### 1. Banco de dados MySQL
+
+Crie o banco de dados e as tabelas necessárias:
+
+```sql
+CREATE DATABASE IF NOT EXISTS techdesafio CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE techdesafio;
+
+CREATE TABLE usuarios (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    nome_usuario VARCHAR(100) NOT NULL UNIQUE,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    senha_hash VARCHAR(255) NOT NULL,
+    data_criacao DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE foruns (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    nome VARCHAR(200) NOT NULL,
+    descricao TEXT,
+    criado_por INT NOT NULL,
+    data_criacao DATETIME DEFAULT CURRENT_TIMESTAMP,
+    featured TINYINT(1) NOT NULL DEFAULT 0,
+    FOREIGN KEY (criado_por) REFERENCES usuarios(id)
+);
+
+CREATE TABLE mensagens (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    forum_id INT NOT NULL,
+    remetente_id INT NOT NULL,
+    conteudo TEXT NOT NULL,
+    mensagem_privada TINYINT(1) NOT NULL DEFAULT 0,
+    data_envio DATETIME DEFAULT CURRENT_TIMESTAMP,
+    destinatario_id INT NULL,
+    editado_em DATETIME NULL,
+    is_system TINYINT(1) NOT NULL DEFAULT 0,
+    media_url VARCHAR(500) NULL,
+    media_type VARCHAR(20) NULL,
+    FOREIGN KEY (forum_id) REFERENCES foruns(id),
+    FOREIGN KEY (remetente_id) REFERENCES usuarios(id),
+    FOREIGN KEY (destinatario_id) REFERENCES usuarios(id)
+);
+
+CREATE TABLE participantes_forum (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    forum_id INT NOT NULL,
+    usuario_id INT NOT NULL,
+    data_entrada DATETIME DEFAULT CURRENT_TIMESTAMP,
+    online TINYINT(1) NOT NULL DEFAULT 0,
+    is_admin TINYINT(1) NOT NULL DEFAULT 0,
+    UNIQUE KEY uq_forum_usuario (forum_id, usuario_id),
+    FOREIGN KEY (forum_id) REFERENCES foruns(id),
+    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+);
+```
+
+> **Nota:** as colunas `is_system`, `media_url` e `media_type` são adicionadas automaticamente pelo backend na primeira execução caso não existam. O script acima já as inclui por completude.
+
+---
+
 ## Instalação e execução
 
 ### Backend
