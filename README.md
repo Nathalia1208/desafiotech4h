@@ -19,7 +19,7 @@ Plataforma de fóruns e chat em tempo real para a comunidade tech. Permite criar
 - **Notificações** — sino na navbar acumula mensagens privadas recebidas
 - **Responsivo** — layout adaptado para mobile, tablet e desktop
 
----
+
 
 ## Tecnologias
 <p>
@@ -41,7 +41,9 @@ Plataforma de fóruns e chat em tempo real para a comunidade tech. Permite criar
 </p>
 ---
 
-### Backend
+
+
+### Backend - Branch Backend
 | Tecnologia | Versão |
 |---|---|
 | Python | 3.11+ |
@@ -52,7 +54,7 @@ Plataforma de fóruns e chat em tempo real para a comunidade tech. Permite criar
 | WebSockets | via Uvicorn |
 | JWT | python-jose |
 
-### Frontend
+### Frontend  - Branch Main
 | Tecnologia | Versão |
 |---|---|
 | React | 19 |
