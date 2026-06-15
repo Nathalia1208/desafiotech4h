@@ -23,6 +23,20 @@ Plataforma de fóruns e chat em tempo real para a comunidade tech. Permite criar
 
 ## Tecnologias
 
+https://cdn.jsdelivr.net/gh/devicons/devicon/icons/python/python-original.svg
+https://cdn.jsdelivr.net/gh/devicons/devicon/icons/fastapi/fastapi-original.svg
+https://cdn.jsdelivr.net/gh/devicons/devicon/icons/sqlalchemy/sqlalchemy-original.svg
+https://cdn.jsdelivr.net/gh/devicons/devicon/icons/mysql/mysql-original.svg
+https://min.io/resources/img/logo/MINIO_Bird.png
+https://cdn.jsdelivr.net/gh/devicons/devicon/icons/react/react-original.svg
+https://cdn.jsdelivr.net/gh/devicons/devicon/icons/typescript/typescript-original.svg
+https://cdn.jsdelivr.net/gh/devicons/devicon/icons/tailwindcss/tailwindcss-original.svg
+https://cdn.jsdelivr.net/gh/devicons/devicon/icons/vitejs/vitejs-original.svg
+https://raw.githubusercontent.com/TanStack/router/main/media/repo-header.png
+https://raw.githubusercontent.com/TanStack/query/main/media/repo-header.png
+https://lucide.dev/logo.light.svg
+https://sonner.emilkowal.ski/favicon.ico
+
 ### Backend
 | Tecnologia | Versão |
 |---|---|
