@@ -222,6 +222,8 @@ cp .env.example .env   # ou crie manualmente conforme a seção abaixo
 
 # 4. Iniciar o servidor
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+python -m uvicorn app.main:app --reload 
 ```
 
 A API estará disponível em `http://localhost:8000`.  
@@ -239,7 +241,7 @@ cd frontend
 npm install
 
 # 2. Iniciar em modo de desenvolvimento
-npm run dev
+npx vite
 ```
 
 A aplicação estará disponível em `http://localhost:8080`.
@@ -274,18 +276,3 @@ AS credenciais do Bucket minio eu coloquei diretamente aqui, pois posteriormente
 - **Mensagens de sistema** (entrada/saída de membros) ficam salvas no banco e aparecem como pílulas centralizadas no chat
 - Upload aceita apenas `image/*` e `audio/*`, com limite de **15 MB** por arquivo
 
----
-
-
-## Scripts disponíveis
-
-### Backend
-```bash
-uvicorn app.main:app --reload 
-python -m uvicorn app.main:app --reload 
-```
-
-### Frontend
-```bash
-npx vite
-```
