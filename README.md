@@ -253,12 +253,13 @@ Crie o arquivo `backend/.env` com o seguinte conteúdo:
 
 ```env
 # Banco de dados MySQL
-DATABASE_URL="mysql+pymysql: coloque a url do BD aqui"
+DATABASE_URL="mysql+pymysql://user:password@host:3306/dbname"
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=10080
-MINIO_ENDPOINT=http://31.97.31.73:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin123
+SECRET_KEY=change-this-to-a-random-secret-key
+MINIO_ENDPOINT=http://localhost:9000
+MINIO_ACCESS_KEY=your-access-key
+MINIO_SECRET_KEY=your-secret-key
 MINIO_BUCKET=bucket
 MINIO_USE_SSL=0
 
