@@ -15,16 +15,16 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 @router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 def signup(data: UserCreate, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == data.email).first():
-        raise HTTPException(status_code=400, detail="E-mail já cadastrado")
+        raise HTTPException(status_code=400, detail={"message": "E-mail já cadastrado", "error_code": "EMAIL_ALREADY_EXISTS"})
 
     if not data.password or not data.password.strip():
         raise HTTPException(status_code=400, detail="Senha é obrigatória")
 
     # check username uniqueness (legacy table enforces unique nome_usuario)
     if db.query(User).filter(User.username == data.username).first():
-        raise HTTPException(status_code=400, detail="Nome de usuário já existe")
+        raise HTTPException(status_code=400, detail={"message": "Nome de usuário já existe", "error_code": "USERNAME_ALREADY_EXISTS"})
 
-    # let the legacy table assign an integer id (autoincrement)
+    # deixar que a tabela legada atribua automaticamente um ID inteiro (autoincremento)
     user = User(
         username=data.username,
         email=data.email,
@@ -36,9 +36,9 @@ def signup(data: UserCreate, db: Session = Depends(get_db)):
         db.refresh(user)
     except IntegrityError:
         db.rollback()
-        # Unique constraint on nome_usuario or email violated
-        raise HTTPException(status_code=400, detail="Nome de usuário ou e-mail já existe")
-    # color is a computed property on the model (based on id) so no DB update is needed
+        # Unique constraint  em nome_usuario ou e-mail violada
+        raise HTTPException(status_code=400, detail={"message": "Nome de usuário ou e-mail já existe", "error_code": "USERNAME_OR_EMAIL_ALREADY_EXISTS"})
+    # color uma propriedade calculada do modelo (baseada no id), portanto nenhuma atualização no banco de dados é necessária
 
     token = create_access_token({"sub": str(user.id)})
     return TokenResponse(access_token=token, user=UserOut.model_validate(user))
@@ -50,7 +50,7 @@ def signin(data: UserLogin, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
-    # prevent empty password attempts
+    #  impedir tentativas com senha vazia
     if not data.password or not data.password.strip():
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
@@ -58,15 +58,16 @@ def signin(data: UserLogin, db: Session = Depends(get_db)):
     if verify_password(data.password, user.password_hash):
         pass
     else:
-        # fallback: legacy plain-text password stored in senha_hash
-        # accept login only if the provided password equals the stored value
+        # fallback: senha legada armazenada em texto puro no campo senha_hash
+        # aceitar login só se  a senha informada for igual ao valor armazenado
+
         if user.password_hash == data.password:
             # upgrade to bcrypt hash
             user.password_hash = hash_password(data.password)
             db.commit()
             db.refresh(user)
         else:
-            # explicit rejection for wrong password
+            # rejeição para senha errada 
             raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
     token = create_access_token({"sub": str(user.id)})
