@@ -1,3 +1,8 @@
+# Lockfiles de outros gerenciadores (projeto usa Bun)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
 # Logs
 logs
 *.log

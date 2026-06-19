@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth-context";
 
@@ -8,43 +9,45 @@ export function AuthModal({ onClose }: { onClose: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [isSignUp, setIsSignUp] = useState(false);
   const [usernameError, setUsernameError] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    try {
-      if (isSignUp) {
-        // create account
-        await signUp(name || email.split("@")[0], email, password);
-        toast.success("Conta criada! Bem-vindo(a) ao 4UM");
-      } else {
-        // sign in
-        await signIn(email, password);
-        toast.success("Bem-vindo(a) de volta!");
-      }
-      onClose();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // reset errors
-      setUsernameError(null);
-      setEmailError(null);
+  function handleAuthError(err: Error) {
+    const code = (err as any).error_code as string | undefined;
+    setUsernameError(null);
+    setEmailError(null);
+    if (code === "USERNAME_ALREADY_EXISTS" || code === "USERNAME_OR_EMAIL_ALREADY_EXISTS") {
+      setUsernameError(err.message);
+      toast.error(err.message);
+    } else if (code === "EMAIL_ALREADY_EXISTS") {
+      setEmailError(err.message);
+      toast.error(err.message);
+    } else {
+      toast.error(err.message || "Erro inesperado");
+    }
+  }
 
-      if (/nome de usuário|nome de usuario|username/i.test(msg)) {
-        setUsernameError(msg);
-        toast.error(msg);
-      } else if (/e-?mail|email/i.test(msg)) {
-        setEmailError(msg);
-        toast.error(msg);
-      } else {
-        toast.error(msg || "Erro inesperado");
-      }
-    } finally {
-      setBusy(false);
+  const signInMutation = useMutation({
+    mutationFn: () => signIn(email, password),
+    onSuccess: () => { toast.success("Bem-vindo(a) de volta!"); onClose(); },
+    onError: handleAuthError,
+  });
+
+  const signUpMutation = useMutation({
+    mutationFn: () => signUp(name || email.split("@")[0], email, password),
+    onSuccess: () => { toast.success("Conta criada! Bem-vindo(a) ao 4UM"); onClose(); },
+    onError: handleAuthError,
+  });
+
+  const busy = signInMutation.isPending || signUpMutation.isPending;
+
+  function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (isSignUp) {
+      signUpMutation.mutate();
+    } else {
+      signInMutation.mutate();
     }
   }
 

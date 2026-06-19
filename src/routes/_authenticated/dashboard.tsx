@@ -1,10 +1,14 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import AuthModal from "@/components/auth-modal";
 import { Plus, Search, Users, ArrowRight, Sparkles, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth-context";
-import { createForum, getForums, countActive, subscribe, renameForum, deleteForum, updateForumDescription, type Forum } from "@/lib/forum-store";
+import {
+  createForum, fetchForumsList, renameForum, deleteForum, updateForumDescription,
+  type Forum,
+} from "@/lib/forum-store";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({ meta: [{ title: "Dashboard — Tech4UM" }] }),
@@ -13,34 +17,25 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
 
 function Dashboard() {
   const { user } = useAuth();
-  const [forums, setForums] = useState<Forum[]>([]);
   const [query, setQuery] = useState("");
-  const [tick, setTick] = useState(0);
   const [creating, setCreating] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    setForums(getForums());
-    const unsub = subscribe((e) => {
-      if (e.type === "forums" || e.type === "presence") {
-        setForums(getForums());
-        setTick((t) => t + 1);
-      }
-    });
-    const i = setInterval(() => setTick((t) => t + 1), 5000);
-    return () => { unsub(); clearInterval(i); };
-  }, []);
+  const { data: forums = [] } = useQuery({
+    queryKey: ["forums"],
+    queryFn: fetchForumsList,
+    staleTime: 5_000,
+  });
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return forums;
     return forums.filter(
-      (f) => f.name.toLowerCase().includes(q) || f.description.toLowerCase().includes(q)
+      (f) => f.name.toLowerCase().includes(q) || f.description.toLowerCase().includes(q),
     );
   }, [forums, query]);
 
-  // featured topics get a different card visual
   const featured = filtered.filter((f) => f.featured).slice(0, 2);
   const rest = filtered.filter((f) => !featured.includes(f));
 
@@ -91,10 +86,10 @@ function Dashboard() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 auto-rows-min">
           {featured.map((f) => (
-                <ForumCard key={f.id} forum={f} variant="featured" active={countActive(f.id)} _tick={tick} onRequireAuth={() => setShowAuth(true)} />
+            <ForumCard key={f.id} forum={f} variant="featured" onRequireAuth={() => setShowAuth(true)} />
           ))}
           {rest.map((f) => (
-                <ForumCard key={f.id} forum={f} variant={f.description ? "default" : "compact"} active={countActive(f.id)} _tick={tick} onRequireAuth={() => setShowAuth(true)} />
+            <ForumCard key={f.id} forum={f} variant={f.description ? "default" : "compact"} onRequireAuth={() => setShowAuth(true)} />
           ))}
         </div>
       )}
@@ -103,9 +98,9 @@ function Dashboard() {
         <CreateForumModal
           onClose={() => setCreating(false)}
           onCreate={(forum) => {
-            setForums(getForums());
             setCreating(false);
             toast.success(`Fórum "${forum.name}" criado!`);
+            navigate({ to: "/forum/$forumId", params: { forumId: forum.id } });
           }}
           userId={user!.id}
         />
@@ -115,7 +110,15 @@ function Dashboard() {
   );
 }
 
-function ForumCard({ forum, variant, onRequireAuth }: { forum: Forum; variant: "featured" | "default" | "compact"; active?: number; _tick?: number; onRequireAuth: () => void }) {
+function ForumCard({
+  forum,
+  variant,
+  onRequireAuth,
+}: {
+  forum: Forum;
+  variant: "featured" | "default" | "compact";
+  onRequireAuth: () => void;
+}) {
   const isFeatured = variant === "featured";
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -134,7 +137,6 @@ function ForumCard({ forum, variant, onRequireAuth }: { forum: Forum; variant: "
         }}
         className="group relative flex flex-col rounded-2xl bg-card border border-border p-5 shadow-card hover:shadow-card-hover hover:-translate-y-0.5 transition-all"
       >
-        {/* Admin action buttons */}
         {isOwner && (
           <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
             <button
@@ -168,43 +170,39 @@ function ForumCard({ forum, variant, onRequireAuth }: { forum: Forum; variant: "
             return `${creator} + ${others} ${others === 1 ? "participante" : "participantes"}`;
           })()}
         </div>
-        {variant !== "compact" && forum.description && (<p className="mt-3 text-sm text-foreground/75 leading-relaxed line-clamp-3">{forum.description}</p>)}
+        {variant !== "compact" && forum.description && (
+          <p className="mt-3 text-sm text-foreground/75 leading-relaxed line-clamp-3">{forum.description}</p>
+        )}
         <div className="mt-4 flex items-end justify-between pt-3 border-t border-border/60">
-          <div className="text-xs text-muted-foreground">Criado por <span className="font-semibold text-foreground">{forum.creator?.username ?? (forum.createdBy ? 'Usuário ' + forum.createdBy : 'Desconhecido')}</span></div>
-          <div className="inline-flex items-center gap-1 rounded-full bg-primary text-primary-foreground px-2.5 py-1 text-xs font-bold shadow-sm"><Users className="h-3 w-3" />{forum.participants_count ?? 0}</div>
+          <div className="text-xs text-muted-foreground">
+            Criado por{" "}
+            <span className="font-semibold text-foreground">
+              {forum.creator?.username ?? (forum.createdBy ? "Usuário " + forum.createdBy : "Desconhecido")}
+            </span>
+          </div>
+          <div className="inline-flex items-center gap-1 rounded-full bg-primary text-primary-foreground px-2.5 py-1 text-xs font-bold shadow-sm">
+            <Users className="h-3 w-3" />{forum.participants_count ?? 0}
+          </div>
         </div>
       </div>
 
-      {editing && (
-        <EditForumModal
-          forum={forum}
-          onClose={() => setEditing(false)}
-        />
-      )}
-      {deleting && (
-        <DeleteForumModal
-          forum={forum}
-          onClose={() => setDeleting(false)}
-        />
-      )}
+      {editing && <EditForumModal forum={forum} onClose={() => setEditing(false)} />}
+      {deleting && <DeleteForumModal forum={forum} onClose={() => setDeleting(false)} />}
     </>
   );
 }
 
 function DeleteForumModal({ forum, onClose }: { forum: Forum; onClose: () => void }) {
-  const [busy, setBusy] = useState(false);
-
-  async function handleDelete() {
-    setBusy(true);
-    try {
-      await deleteForum(forum.id);
+  const queryClient = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: () => deleteForum(forum.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["forums"] });
       toast.success("Fórum excluído");
       onClose();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Erro ao excluir");
-      setBusy(false);
-    }
-  }
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Erro ao excluir"),
+  });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 backdrop-blur-sm p-4" onClick={onClose}>
@@ -219,18 +217,18 @@ function DeleteForumModal({ forum, onClose }: { forum: Forum; onClose: () => voi
           <button
             type="button"
             onClick={onClose}
-            disabled={busy}
+            disabled={mutation.isPending}
             className="rounded-md px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted disabled:opacity-60"
           >
             Cancelar
           </button>
           <button
             type="button"
-            onClick={handleDelete}
-            disabled={busy}
+            onClick={() => mutation.mutate()}
+            disabled={mutation.isPending}
             className="rounded-md bg-destructive hover:bg-destructive/90 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60 transition-colors"
           >
-            {busy ? "Excluindo..." : "Excluir"}
+            {mutation.isPending ? "Excluindo..." : "Excluir"}
           </button>
         </div>
       </div>
@@ -239,24 +237,32 @@ function DeleteForumModal({ forum, onClose }: { forum: Forum; onClose: () => voi
 }
 
 function EditForumModal({ forum, onClose }: { forum: Forum; onClose: () => void }) {
+  const queryClient = useQueryClient();
   const [name, setName] = useState(forum.name);
   const [desc, setDesc] = useState(forum.description ?? "");
-  const [busy, setBusy] = useState(false);
+
+  const renameMutation = useMutation({
+    mutationFn: (newName: string) => renameForum(forum.id, newName),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["forums"] }),
+  });
+  const updateDescMutation = useMutation({
+    mutationFn: (newDesc: string) => updateForumDescription(forum.id, newDesc),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["forums"] }),
+  });
+
+  const busy = renameMutation.isPending || updateDescMutation.isPending;
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setBusy(true);
     try {
       const nameChanged = name.trim() !== forum.name;
       const descChanged = desc.trim() !== (forum.description ?? "");
-      if (nameChanged) await renameForum(forum.id, name.trim());
-      if (descChanged) await updateForumDescription(forum.id, desc.trim());
+      if (nameChanged) await renameMutation.mutateAsync(name.trim());
+      if (descChanged) await updateDescMutation.mutateAsync(desc.trim());
       if (nameChanged || descChanged) toast.success("Fórum atualizado");
       onClose();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Erro ao atualizar fórum");
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -303,45 +309,62 @@ function EditForumModal({ forum, onClose }: { forum: Forum; onClose: () => void 
 }
 
 function CreateForumModal({
-  onClose, onCreate, userId,
-}: { onClose: () => void; onCreate: (f: Forum) => void; userId: string }) {
+  onClose,
+  onCreate,
+  userId,
+}: {
+  onClose: () => void;
+  onCreate: (f: Forum) => void;
+  userId: string;
+}) {
+  const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
-  const [busy, setBusy] = useState(false);
-  async function submit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      const f = await createForum({ name, description: desc, userId });
-      onCreate(f);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Erro ao criar fórum");
-    } finally {
-      setBusy(false);
-    }
-  }
+
+  const mutation = useMutation({
+    mutationFn: () => createForum({ name, description: desc, userId }),
+    onSuccess: (forum) => {
+      queryClient.invalidateQueries({ queryKey: ["forums"] });
+      onCreate(forum);
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Erro ao criar fórum"),
+  });
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 backdrop-blur-sm p-4" onClick={onClose}>
       <div className="w-full max-w-md rounded-2xl bg-card border border-border shadow-card-hover p-6" onClick={(e) => e.stopPropagation()}>
         <h2 className="font-display text-xl font-extrabold text-primary">Criar um novo 4um</h2>
         <p className="mt-1 text-sm text-muted-foreground">Dê um nome único e descreva sobre o que será.</p>
-        <form onSubmit={submit} className="mt-5 space-y-4">
+        <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }} className="mt-5 space-y-4">
           <label className="block">
             <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">Nome do fórum</div>
-            <input value={name} onChange={(e) => setName(e.target.value)} required minLength={2} maxLength={60}
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              minLength={2}
+              maxLength={60}
               placeholder="ex: react-advanced"
-              className="w-full rounded-md border border-input bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              className="w-full rounded-md border border-input bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
           </label>
           <label className="block">
             <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">Descrição (opcional)</div>
-            <textarea value={desc} onChange={(e) => setDesc(e.target.value)} maxLength={300} rows={3}
+            <textarea
+              value={desc}
+              onChange={(e) => setDesc(e.target.value)}
+              maxLength={300}
+              rows={3}
               placeholder="Sobre o que vocês vão conversar?"
-              className="w-full resize-none rounded-md border border-input bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+              className="w-full resize-none rounded-md border border-input bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
           </label>
           <div className="flex gap-2 justify-end pt-2">
-            <button type="button" onClick={onClose} className="rounded-md px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted">Cancelar</button>
-            <button type="submit" disabled={busy} className="rounded-md bg-primary hover:bg-primary-dark text-primary-foreground px-4 py-2 text-sm font-semibold disabled:opacity-60">
-              {busy ? "Criando..." : "Criar fórum"}
+            <button type="button" onClick={onClose} className="rounded-md px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted">
+              Cancelar
+            </button>
+            <button type="submit" disabled={mutation.isPending} className="rounded-md bg-primary hover:bg-primary-dark text-primary-foreground px-4 py-2 text-sm font-semibold disabled:opacity-60">
+              {mutation.isPending ? "Criando..." : "Criar fórum"}
             </button>
           </div>
         </form>

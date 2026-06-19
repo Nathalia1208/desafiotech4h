@@ -1,5 +1,6 @@
 import { createFileRoute, Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Send, Search, X, Lock, PanelRightClose, PanelRightOpen,
   MessageSquare, UserPlus, Wifi, WifiOff, Pencil, Trash2, Check,
@@ -8,9 +9,11 @@ import {
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth-context";
 import {
-  getForum, getForums, fetchMessages, sendMessage, editMessage, deleteMessage, subscribe,
-  addParticipant, removeParticipant, setParticipantAdmin, getSession,
-  renameForum, deleteForum, updateForumDescription, uploadMedia,
+  fetchForumById, fetchForumsList, fetchMessages, sendMessage, editMessage, deleteMessage,
+  fetchParticipantsList, fetchUsersList,
+  addParticipant, removeParticipant, setParticipantAdmin,
+  renameForum, deleteForum, updateForumDescription, uploadMedia, colorFor,
+  mapMessage,
   type Forum, type Message, type Presence,
 } from "@/lib/forum-store";
 import { addNotification } from "@/lib/notification-store";
@@ -21,40 +24,11 @@ export const Route = createFileRoute("/_authenticated/forum/$forumId")({
   component: ForumRoom,
 });
 
-// ─── helpers ────────────────────────────────────────────────────────────────
-
-function mapMsg(m: WSMessagePayload | any): Message {
-  return {
-    id: String(m.id),
-    forumId: String(m.forum_id),
-    authorId: String(m.author_id),
-    authorName: m.author_name,
-    text: m.text,
-    createdAt: typeof m.created_at === "number"
-      ? m.created_at
-      : Date.parse(m.created_at) || Date.now(),
-    privateToId: m.private_to_id != null ? String(m.private_to_id) : undefined,
-    editedAt: m.edited_at ? Date.parse(m.edited_at) : undefined,
-    isSystem: !!m.is_system,
-    mediaUrl: m.media_url ?? undefined,
-    mediaType: m.media_type ?? undefined,
-  };
-}
-
-const PALETTE = ["#7c3aed","#dc2626","#1d4ed8","#ea580c","#16a34a","#7e22ce","#0f766e","#be185d","#65a30d","#0891b2"];
-function colorFromId(id: string) {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return PALETTE[h % PALETTE.length];
-}
-
 function playPrivateMessageSound() {
   try {
     const ctx = new AudioContext();
     const gain = ctx.createGain();
     gain.connect(ctx.destination);
-
-    // Two-tone chime: low → high
     const freqs = [660, 880];
     freqs.forEach((freq, i) => {
       const osc = ctx.createOscillator();
@@ -76,23 +50,61 @@ function ForumRoom() {
   const { forumId } = useParams({ strict: false }) as { forumId: string };
   const { user } = useAuth();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
-  const [forum, setForum] = useState<Forum | undefined>(() => getForum(forumId));
-  const [forums, setForums] = useState<Forum[]>(() => getForums());
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [dbParticipants, setDbParticipants] = useState<Presence[]>([]);
+  // ── server state via TanStack Query ──────────────────────────────────────
+
+  const forumQuery = useQuery({
+    queryKey: ["forum", forumId],
+    queryFn: () => fetchForumById(forumId),
+    placeholderData: () =>
+      queryClient.getQueryData<Forum[]>(["forums"])?.find((f) => f.id === forumId),
+    retry: 1,
+  });
+  const forum = forumQuery.data;
+
+  const { data: forums = [] } = useQuery({
+    queryKey: ["forums"],
+    queryFn: fetchForumsList,
+    staleTime: 5_000,
+  });
+
+  const { data: messages = [] } = useQuery({
+    queryKey: ["messages", forumId],
+    queryFn: () => fetchMessages(forumId),
+    enabled: !!user,
+  });
+
+  const { data: dbParticipants = [] } = useQuery({
+    queryKey: ["participants", forumId],
+    queryFn: () => fetchParticipantsList(forumId),
+  });
+
+  // Declared here so it can be referenced by the query's `enabled` option below
+  const [showUserDirectory, setShowUserDirectory] = useState(false);
+
+  const { data: directoryUsers = [] } = useQuery({
+    queryKey: ["users"],
+    queryFn: fetchUsersList,
+    enabled: showUserDirectory,
+    staleTime: 30_000,
+  });
+
+  // Navigate away if forum not found
+  useEffect(() => {
+    if (forumQuery.isError) navigate({ to: "/dashboard", replace: true });
+  }, [forumQuery.isError, navigate]);
+
+  // ── local UI state ────────────────────────────────────────────────────────
+
   const [onlineMap, setOnlineMap] = useState<Map<string, { username: string; color: string }>>(
-    () => new Map()
+    () => new Map(),
   );
   const [typingUsers, setTypingUsers] = useState<Record<string, { name: string; at: number }>>({});
   const [privateNotifs, setPrivateNotifs] = useState<Record<string, number>>({});
   const [text, setText] = useState("");
   const [privateTo, setPrivateTo] = useState<Presence | null>(null);
   const [showParticipants, setShowParticipants] = useState(true);
-  const [showUserDirectory, setShowUserDirectory] = useState(false);
-  const [directoryUsers, setDirectoryUsers] = useState<
-    { id: number; username: string; email: string; color?: string }[]
-  >([]);
   const [dirSearch, setDirSearch] = useState("");
   const [participantSearch, setParticipantSearch] = useState("");
   const [wsConnected, setWsConnected] = useState(false);
@@ -102,7 +114,6 @@ function ForumRoom() {
   const [confirmLeaveForum, setConfirmLeaveForum] = useState(false);
   const [editingDescription, setEditingDescription] = useState(false);
   const [descriptionText, setDescriptionText] = useState("");
-
   const [pendingImage, setPendingImage] = useState<{ file: File; preview: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -116,117 +127,97 @@ function ForumRoom() {
   const audioChunksRef = useRef<Blob[]>([]);
   const lastTyped = useRef(0);
 
-  // ── load forum + history + participants on forumId change ────────────────
+  // Reset per-room UI state when navigating to a different forum
   useEffect(() => {
-    setMessages([]);
     setPrivateTo(null);
     setPrivateNotifs({});
     setOnlineMap(new Map());
+  }, [forumId]);
 
-    // Forum metadata
-    const cached = getForum(forumId);
-    if (cached) {
-      setForum(cached);
-    } else {
-      fetch(`http://127.0.0.1:8000/forums/${forumId}`)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => {
-          if (!data) { navigate({ to: "/dashboard", replace: true }); return; }
-          setForum({
-            id: String(data.id),
-            name: data.name,
-            description: data.description || "",
-            createdBy: String(data.created_by),
-            createdAt: Date.parse(data.created_at) || Date.now(),
-            featured: !!data.featured,
-          });
-        })
-        .catch(() => navigate({ to: "/dashboard", replace: true }));
-    }
+  // ── mutations ─────────────────────────────────────────────────────────────
 
-    // Message history (requires auth)
-    if (user) {
-      fetchMessages(forumId).then(setMessages).catch(() => {});
-    }
+  const sendMutation = useMutation({
+    mutationFn: (input: Parameters<typeof sendMessage>[0]) => sendMessage(input),
+    onSuccess: (msg) => {
+      queryClient.setQueryData<Message[]>(["messages", forumId], (prev = []) =>
+        prev.some((m) => m.id === msg.id) ? prev : [...prev, msg],
+      );
+    },
+  });
 
-    // Participants list
-    fetch(`http://127.0.0.1:8000/forums/${forumId}/participants`)
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data) => {
-        setDbParticipants(
-          (data as any[]).map((u) => ({
-            userId: String(u.id),
-            forumId,
-            username: u.username || u.email,
-            color: u.color || colorFromId(String(u.id)),
-            lastSeen: 0,
-            online: false,
-            dataEntrada: u.data_entrada ?? null,
-            isAdmin: !!u.is_admin,
-          }))
-        );
-      })
-      .catch(() => {});
-  }, [forumId, user, navigate]);
+  const editMutation = useMutation({
+    mutationFn: ({ messageId, newText }: { messageId: string; newText: string }) =>
+      editMessage(forumId, messageId, newText),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<Message[]>(["messages", forumId], (prev = []) =>
+        prev.map((m) => (m.id === updated.id ? updated : m)),
+      );
+    },
+  });
 
-  // ── subscribe to store events (forum list updates) ───────────────────────
-  useEffect(() => {
-    const unsub = subscribe((e) => {
-      if (e.type === "forums") setForums(getForums());
-    });
-    return () => { unsub(); };
-  }, []);
+  const deleteMsgMutation = useMutation({
+    mutationFn: (messageId: string) => deleteMessage(forumId, messageId),
+    onSuccess: (_, messageId) => {
+      queryClient.setQueryData<Message[]>(["messages", forumId], (prev = []) =>
+        prev.filter((m) => m.id !== messageId),
+      );
+    },
+  });
 
-  // ── user directory panel data ────────────────────────────────────────────
-  useEffect(() => {
-    if (!showUserDirectory) return;
-    const session = getSession();
-    const headers: Record<string, string> = {};
-    if (session?.token) headers["Authorization"] = `Bearer ${session.token}`;
-    fetch("http://127.0.0.1:8000/users", { headers })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data) =>
-        setDirectoryUsers(
-          (data as any[]).map((u) => ({
-            id: u.id,
-            username: u.username || u.email,
-            email: u.email,
-            color: u.color,
-          }))
-        )
-      )
-      .catch(() => {});
-  }, [showUserDirectory]);
+  const renameMutation = useMutation({
+    mutationFn: (name: string) => renameForum(forumId, name),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["forum", forumId], updated);
+      queryClient.invalidateQueries({ queryKey: ["forums"] });
+    },
+  });
+
+  const updateDescMutation = useMutation({
+    mutationFn: (desc: string) => updateForumDescription(forumId, desc),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["forum", forumId], updated);
+      queryClient.invalidateQueries({ queryKey: ["forums"] });
+    },
+  });
+
+  const deleteForumMutation = useMutation({
+    mutationFn: () => deleteForum(forumId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["forums"] });
+      navigate({ to: "/dashboard", replace: true });
+    },
+  });
+
+  const addParticipantMutation = useMutation({
+    mutationFn: (payload: { usuario_id?: number; username?: string; email?: string }) =>
+      addParticipant(forumId, payload),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["participants", forumId] }),
+  });
+
+  const removeParticipantMutation = useMutation({
+    mutationFn: (userId: string) => removeParticipant(forumId, userId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["participants", forumId] }),
+  });
+
+  const toggleAdminMutation = useMutation({
+    mutationFn: ({ userId, isAdmin }: { userId: string; isAdmin: boolean }) =>
+      setParticipantAdmin(forumId, userId, isAdmin),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["participants", forumId] }),
+  });
 
   // ── WebSocket real-time ──────────────────────────────────────────────────
   const { sendTyping: wsSendTyping } = useForumWS(forumId, {
     onConnected: () => setWsConnected(true),
     onDisconnected: () => setWsConnected(false),
-    onMessage: (raw) => {
-      const msg = mapMsg(raw);
-      setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
-      // Refresh participant list on system events (join/leave/add/remove)
+    onMessage: (raw: WSMessagePayload) => {
+      const msg = mapMessage(raw);
+      queryClient.setQueryData<Message[]>(["messages", forumId], (prev = []) =>
+        prev.some((m) => m.id === msg.id) ? prev : [...prev, msg],
+      );
       if (msg.isSystem) {
-        fetch(`http://127.0.0.1:8000/forums/${forumId}/participants`)
-          .then((r) => (r.ok ? r.json() : []))
-          .then((data) => {
-            setDbParticipants(
-              (data as any[]).map((u) => ({
-                userId: String(u.id),
-                forumId,
-                username: u.username || u.email,
-                color: u.color || colorFromId(String(u.id)),
-                lastSeen: 0,
-                online: false,
-                dataEntrada: u.data_entrada ?? null,
-                isAdmin: !!u.is_admin,
-              }))
-            );
-          })
-          .catch(() => {});
+        queryClient.invalidateQueries({ queryKey: ["participants", forumId] });
         return;
       }
-      // Private message notification for incoming private messages
       if (msg.privateToId != null && msg.privateToId === user?.id && msg.authorId !== user?.id) {
         playPrivateMessageSound();
         addNotification({
@@ -249,17 +240,12 @@ function ForumRoom() {
     },
     onPresence: (users: WSPresenceUser[]) => {
       const map = new Map<string, { username: string; color: string }>();
-      for (const u of users) {
-        map.set(String(u.userId), { username: u.username, color: u.color });
-      }
+      for (const u of users) map.set(String(u.userId), { username: u.username, color: u.color });
       setOnlineMap(map);
     },
     onTyping: ({ userId, username, at }) => {
       if (String(userId) === user?.id) return;
-      setTypingUsers((prev) => ({
-        ...prev,
-        [String(userId)]: { name: username, at },
-      }));
+      setTypingUsers((prev) => ({ ...prev, [String(userId)]: { name: username, at } }));
     },
   });
 
@@ -283,19 +269,20 @@ function ForumRoom() {
 
   // ── derived state ─────────────────────────────────────────────────────────
 
-  // Merge DB participants with live online status
-  const participants = useMemo(() => {
-    return dbParticipants
-      .map((p) => ({ ...p, online: onlineMap.has(p.userId) }))
-      .sort((a, b) => {
-        if (a.online !== b.online) return b.online ? 1 : -1;
-        return a.username.localeCompare(b.username);
-      });
-  }, [dbParticipants, onlineMap]);
+  const participants = useMemo(
+    () =>
+      dbParticipants
+        .map((p) => ({ ...p, online: onlineMap.has(p.userId) }))
+        .sort((a, b) => {
+          if (a.online !== b.online) return b.online ? 1 : -1;
+          return a.username.localeCompare(b.username);
+        }),
+    [dbParticipants, onlineMap],
+  );
 
   const currentUserIsParticipant = useMemo(
     () => dbParticipants.some((p) => p.userId === user?.id),
-    [dbParticipants, user]
+    [dbParticipants, user],
   );
 
   const filteredParticipants = useMemo(() => {
@@ -304,7 +291,6 @@ function ForumRoom() {
     return participants.filter((p) => p.username.toLowerCase().includes(q));
   }, [participants, participantSearch]);
 
-  // Only show messages the current user is allowed to see
   const visibleMessages = useMemo(() => {
     if (!user) return [];
     return messages.filter((m) => {
@@ -313,8 +299,6 @@ function ForumRoom() {
     });
   }, [messages, user]);
 
-
-  // Name lookup map for "privado para @name"
   const nameById = useMemo(() => {
     const map = new Map<string, string>();
     for (const p of dbParticipants) map.set(p.userId, p.username);
@@ -327,7 +311,7 @@ function ForumRoom() {
   const totalNotifs = Object.values(privateNotifs).reduce((s, n) => s + n, 0);
   const currentUserIsAdmin = useMemo(
     () => dbParticipants.some((p) => p.userId === user?.id && p.isAdmin),
-    [dbParticipants, user]
+    [dbParticipants, user],
   );
 
   // ── actions ───────────────────────────────────────────────────────────────
@@ -353,18 +337,25 @@ function ForumRoom() {
       setUploading(false);
     }
 
+    const currentText = text;
+    setText("");
+    if (pendingImage) {
+      URL.revokeObjectURL(pendingImage.preview);
+      setPendingImage(null);
+    }
+
     try {
-      const msg = await sendMessage({
-        forumId, author: user, text, privateToId: privateTo?.userId, mediaUrl, mediaType,
+      await sendMutation.mutateAsync({
+        forumId,
+        author: user,
+        text: currentText,
+        privateToId: privateTo?.userId,
+        mediaUrl,
+        mediaType,
       });
-      setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
-      setText("");
-      if (pendingImage) {
-        URL.revokeObjectURL(pendingImage.preview);
-        setPendingImage(null);
-      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Erro ao enviar");
+      setText(currentText);
     }
   }
 
@@ -384,12 +375,14 @@ function ForumRoom() {
         setUploading(true);
         try {
           const result = await uploadMedia(blob, `audio-${Date.now()}.webm`);
-          const msg = await sendMessage({
-            forumId, author: user!, text: "",
+          await sendMutation.mutateAsync({
+            forumId,
+            author: user!,
+            text: "",
             privateToId: privateTo?.userId,
-            mediaUrl: result.url, mediaType: result.media_type,
+            mediaUrl: result.url,
+            mediaType: result.media_type,
           });
-          setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
         } catch (err) {
           toast.error(err instanceof Error ? err.message : "Erro ao enviar áudio");
         }
@@ -414,8 +407,7 @@ function ForumRoom() {
 
   async function handleEdit(messageId: string, newText: string) {
     try {
-      const updated = await editMessage(forumId, messageId, newText);
-      setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+      await editMutation.mutateAsync({ messageId, newText });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Erro ao editar");
     }
@@ -423,8 +415,7 @@ function ForumRoom() {
 
   async function handleDelete(messageId: string) {
     try {
-      await deleteMessage(forumId, messageId);
-      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+      await deleteMsgMutation.mutateAsync(messageId);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Erro ao excluir");
     }
@@ -451,8 +442,7 @@ function ForumRoom() {
 
   async function handleRemoveParticipant(p: Presence) {
     try {
-      await removeParticipant(forumId, p.userId);
-      setDbParticipants((prev) => prev.filter((x) => x.userId !== p.userId));
+      await removeParticipantMutation.mutateAsync(p.userId);
       if (privateTo?.userId === p.userId) setPrivateTo(null);
       toast.success(`${p.username} removido do fórum`);
     } catch (err) {
@@ -477,8 +467,7 @@ function ForumRoom() {
     const trimmed = descriptionText.trim();
     if (trimmed === (forum?.description ?? "")) { setEditingDescription(false); return; }
     try {
-      const updated = await updateForumDescription(forumId, trimmed);
-      setForum(updated);
+      await updateDescMutation.mutateAsync(trimmed);
       setEditingDescription(false);
       toast.success("Descrição atualizada");
     } catch (err) {
@@ -490,8 +479,7 @@ function ForumRoom() {
     const trimmed = renameText.trim();
     if (!trimmed || trimmed === forum?.name) { setRenamingForum(false); return; }
     try {
-      const updated = await renameForum(forumId, trimmed);
-      setForum(updated);
+      await renameMutation.mutateAsync(trimmed);
       setRenamingForum(false);
       toast.success("Fórum renomeado com sucesso");
     } catch (err) {
@@ -502,8 +490,7 @@ function ForumRoom() {
   async function handleJoinForum() {
     if (!user) return;
     try {
-      const p = await addParticipant(forumId, { usuario_id: Number(user.id) });
-      setDbParticipants((prev) => [p, ...prev]);
+      await addParticipantMutation.mutateAsync({ usuario_id: Number(user.id) });
       toast.success("Você entrou no fórum!");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Erro ao entrar no fórum");
@@ -513,7 +500,7 @@ function ForumRoom() {
   async function handleLeaveForum() {
     if (!user) return;
     try {
-      await removeParticipant(forumId, user.id);
+      await removeParticipantMutation.mutateAsync(user.id);
       toast.success("Você saiu do fórum");
       navigate({ to: "/dashboard", replace: true });
     } catch (err) {
@@ -524,9 +511,8 @@ function ForumRoom() {
 
   async function handleDeleteForum() {
     try {
-      await deleteForum(forumId);
+      await deleteForumMutation.mutateAsync();
       toast.success("Fórum excluído");
-      navigate({ to: "/dashboard", replace: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Erro ao excluir fórum");
       setConfirmDeleteForum(false);
@@ -536,8 +522,7 @@ function ForumRoom() {
   async function handleToggleAdmin(p: Presence) {
     const newValue = !p.isAdmin;
     try {
-      const updated = await setParticipantAdmin(forumId, p.userId, newValue);
-      setDbParticipants((prev) => prev.map((x) => x.userId === p.userId ? { ...x, isAdmin: updated.isAdmin } : x));
+      await toggleAdminMutation.mutateAsync({ userId: p.userId, isAdmin: newValue });
       toast.success(newValue ? `${p.username} agora é admin` : `${p.username} não é mais admin`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Erro ao atualizar função");
@@ -629,7 +614,6 @@ function ForumRoom() {
             </div>
 
             {showUserDirectory ? (
-              /* Directory panel */
               <div className="flex flex-col flex-1 overflow-hidden">
                 <div className="px-3 py-2 border-b border-border flex items-center gap-2">
                   <button
@@ -657,11 +641,11 @@ function ForumRoom() {
                       (u) =>
                         !dirSearch ||
                         u.username.toLowerCase().includes(dirSearch.toLowerCase()) ||
-                        u.email.toLowerCase().includes(dirSearch.toLowerCase())
+                        u.email.toLowerCase().includes(dirSearch.toLowerCase()),
                     )
                     .map((u) => {
                       const isMember = dbParticipants.some(
-                        (p) => Number(p.userId) === Number(u.id)
+                        (p) => Number(p.userId) === Number(u.id),
                       );
                       return (
                         <li
@@ -670,7 +654,7 @@ function ForumRoom() {
                         >
                           <div
                             className="flex-shrink-0 h-7 w-7 rounded-full flex items-center justify-center text-white text-xs font-bold"
-                            style={{ backgroundColor: u.color || colorFromId(String(u.id)) }}
+                            style={{ backgroundColor: u.color || colorFor(String(u.id)) }}
                           >
                             {u.username.charAt(0).toUpperCase()}
                           </div>
@@ -688,9 +672,8 @@ function ForumRoom() {
                             <button
                               onClick={async () => {
                                 try {
-                                  const p = await addParticipant(forumId, { usuario_id: Number(u.id) });
-                                  setDbParticipants((prev) => [p, ...prev]);
-                                  toast.success(`${p.username} adicionado ao fórum`);
+                                  await addParticipantMutation.mutateAsync({ usuario_id: Number(u.id) });
+                                  toast.success(`${u.username} adicionado ao fórum`);
                                 } catch (err) {
                                   toast.error(err instanceof Error ? err.message : "Erro");
                                 }
@@ -711,7 +694,6 @@ function ForumRoom() {
                 </ul>
               </div>
             ) : (
-              /* Participants list */
               <div className="flex flex-col flex-1 overflow-hidden">
                 <div className="px-3 py-2 border-b border-border">
                   <div className="relative">
@@ -725,7 +707,6 @@ function ForumRoom() {
                   </div>
                 </div>
 
-                {/* Online count */}
                 {onlineCount > 0 && (
                   <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Online — {onlineCount}
@@ -749,7 +730,6 @@ function ForumRoom() {
                           isSelected ? "bg-secondary/10 border-r-2 border-secondary" : "hover:bg-muted/60"
                         }`}
                       >
-                        {/* Main clickable area (DM) */}
                         <button
                           disabled={isMe}
                           onClick={() => handleParticipantClick(p)}
@@ -770,9 +750,7 @@ function ForumRoom() {
 
                           <span className="flex-1 min-w-0 text-xs font-medium text-foreground truncate">
                             {p.username}
-                            {isMe && (
-                              <span className="ml-1 text-muted-foreground font-normal">(você)</span>
-                            )}
+                            {isMe && <span className="ml-1 text-muted-foreground font-normal">(você)</span>}
                           </span>
 
                           {p.isAdmin && !currentUserIsAdmin && (
@@ -791,7 +769,6 @@ function ForumRoom() {
                           )}
                         </button>
 
-                        {/* Admin action buttons */}
                         {currentUserIsAdmin && !isMe && (
                           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
                             {notifCount > 0 && (
@@ -840,7 +817,6 @@ function ForumRoom() {
 
         {/* ── Chat area ──────────────────────────────────────────────────── */}
         <section className="flex-1 min-w-0 flex flex-col rounded-2xl bg-card border border-border shadow-card overflow-hidden">
-          {/* Header */}
           <header className="px-5 py-3 border-b border-border flex items-center justify-between gap-3">
             <div className="min-w-0 flex items-center gap-3">
               {!showParticipants && (
@@ -944,7 +920,7 @@ function ForumRoom() {
                   )
                 )}
               </div>
-              </div>
+            </div>
             <div className="flex items-center gap-3 text-xs text-muted-foreground flex-shrink-0">
               {wsConnected ? (
                 <span className="hidden sm:inline-flex items-center gap-1 text-green-600">
@@ -989,10 +965,7 @@ function ForumRoom() {
           </header>
 
           {/* Messages */}
-          <div
-            ref={scrollRef}
-            className="flex-1 overflow-y-auto scrollbar-thin px-5 py-4 space-y-3"
-          >
+          <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin px-5 py-4 space-y-3">
             {visibleMessages.length === 0 && (
               <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground py-12">
                 <MessageSquare className="h-10 w-10 mb-2 opacity-30" />
@@ -1017,7 +990,7 @@ function ForumRoom() {
                   onEdit={handleEdit}
                   onDelete={handleDelete}
                 />
-              )
+              ),
             )}
 
             {typingNames.length > 0 && (
@@ -1047,125 +1020,115 @@ function ForumRoom() {
               </button>
             </div>
           ) : (
-          <form
-            onSubmit={handleSend}
-            className={`border-t border-border transition-all ${
-              privateTo
-                ? "bg-secondary/10 border-t-secondary/30"
-                : ""
-            }`}
-          >
-            {privateTo && (
-              <div className="flex items-center justify-between px-4 pt-2.5 pb-1">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-secondary">
-                  <Lock className="h-3 w-3" />
-                  Mensagem privada para{" "}
-                  <span className="underline underline-offset-2">@{privateTo.username}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setPrivateTo(null)}
-                  className="p-0.5 rounded text-secondary/70 hover:text-secondary hover:bg-secondary/10 transition-colors"
-                  title="Cancelar"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
-            {/* Pending image preview */}
-            {pendingImage && (
-              <div className="px-3 pt-2 flex items-start gap-2">
-                <div className="relative inline-block">
-                  <img
-                    src={pendingImage.preview}
-                    alt="preview"
-                    className="max-h-32 max-w-[200px] rounded-lg border border-border object-cover"
-                  />
+            <form
+              onSubmit={handleSend}
+              className={`border-t border-border transition-all ${privateTo ? "bg-secondary/10 border-t-secondary/30" : ""}`}
+            >
+              {privateTo && (
+                <div className="flex items-center justify-between px-4 pt-2.5 pb-1">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-secondary">
+                    <Lock className="h-3 w-3" />
+                    Mensagem privada para{" "}
+                    <span className="underline underline-offset-2">@{privateTo.username}</span>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => { URL.revokeObjectURL(pendingImage.preview); setPendingImage(null); }}
-                    className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-destructive text-white flex items-center justify-center hover:bg-destructive/80 transition-colors"
+                    onClick={() => setPrivateTo(null)}
+                    className="p-0.5 rounded text-secondary/70 hover:text-secondary hover:bg-secondary/10 transition-colors"
+                    title="Cancelar"
                   >
-                    <X className="h-3 w-3" />
+                    <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
-              </div>
-            )}
-
-            <div className="flex items-center gap-2 p-3">
-              {/* Hidden file input */}
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={handleImagePick}
-              />
-              {/* Image button */}
-              <button
-                type="button"
-                onClick={() => imageInputRef.current?.click()}
-                disabled={uploading || recording}
-                title="Enviar imagem"
-                className="p-2 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-              >
-                <ImageIcon className="h-4 w-4" />
-              </button>
-              {/* Audio recording button */}
-              <button
-                type="button"
-                onClick={handleToggleRecord}
-                disabled={uploading}
-                title={recording ? "Parar gravação" : "Gravar áudio"}
-                className={`p-2 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 ${
-                  recording
-                    ? "text-destructive bg-destructive/10 hover:bg-destructive/20 animate-pulse"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                }`}
-              >
-                {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-              </button>
-
-              <input
-                ref={inputRef}
-                value={text}
-                onChange={(e) => onType(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSend(e as any);
+              )}
+              {pendingImage && (
+                <div className="px-3 pt-2 flex items-start gap-2">
+                  <div className="relative inline-block">
+                    <img
+                      src={pendingImage.preview}
+                      alt="preview"
+                      className="max-h-32 max-w-[200px] rounded-lg border border-border object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { URL.revokeObjectURL(pendingImage.preview); setPendingImage(null); }}
+                      className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-destructive text-white flex items-center justify-center hover:bg-destructive/80 transition-colors"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center gap-2 p-3">
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleImagePick}
+                />
+                <button
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  disabled={uploading || recording}
+                  title="Enviar imagem"
+                  className="p-2 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                >
+                  <ImageIcon className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleToggleRecord}
+                  disabled={uploading}
+                  title={recording ? "Parar gravação" : "Gravar áudio"}
+                  className={`p-2 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 ${
+                    recording
+                      ? "text-destructive bg-destructive/10 hover:bg-destructive/20 animate-pulse"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  }`}
+                >
+                  {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                </button>
+                <input
+                  ref={inputRef}
+                  value={text}
+                  onChange={(e) => onType(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      e.currentTarget.form?.requestSubmit();
+                    }
+                  }}
+                  placeholder={
+                    recording
+                      ? "Gravando áudio…"
+                      : privateTo
+                      ? `Mensagem privada para ${privateTo.username}…`
+                      : "Escreva uma mensagem…"
                   }
-                }}
-                placeholder={
-                  recording
-                    ? "Gravando áudio…"
-                    : privateTo
-                    ? `Mensagem privada para ${privateTo.username}…`
-                    : "Escreva uma mensagem…"
-                }
-                disabled={recording}
-                className={`flex-1 rounded-full px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50 disabled:opacity-60 ${
-                  privateTo
-                    ? "bg-white border border-secondary/30 text-foreground placeholder:text-muted-foreground/60"
-                    : "bg-muted placeholder:text-muted-foreground/60"
-                }`}
-                maxLength={2000}
-              />
-              <button
-                type="submit"
-                disabled={(!text.trim() && !pendingImage) || uploading || recording}
-                className={`p-2.5 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 ${
-                  privateTo
-                    ? "bg-secondary text-secondary-foreground hover:bg-secondary-dark"
-                    : "bg-primary text-primary-foreground hover:bg-primary-dark"
-                }`}
-              >
-                {uploading
-                  ? <span className="h-4 w-4 block animate-spin rounded-full border-2 border-current border-t-transparent" />
-                  : <Send className="h-4 w-4" />}
-              </button>
-            </div>
-          </form>
+                  disabled={recording}
+                  className={`flex-1 rounded-full px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50 disabled:opacity-60 ${
+                    privateTo
+                      ? "bg-white border border-secondary/30 text-foreground placeholder:text-muted-foreground/60"
+                      : "bg-muted placeholder:text-muted-foreground/60"
+                  }`}
+                  maxLength={2000}
+                />
+                <button
+                  type="submit"
+                  disabled={(!text.trim() && !pendingImage) || uploading || recording}
+                  className={`p-2.5 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 ${
+                    privateTo
+                      ? "bg-secondary text-secondary-foreground hover:bg-secondary-dark"
+                      : "bg-primary text-primary-foreground hover:bg-primary-dark"
+                  }`}
+                >
+                  {uploading
+                    ? <span className="h-4 w-4 block animate-spin rounded-full border-2 border-current border-t-transparent" />
+                    : <Send className="h-4 w-4" />}
+                </button>
+              </div>
+            </form>
           )}
         </section>
 
@@ -1187,19 +1150,11 @@ function ForumRoom() {
                     : "bg-card border-border hover:border-primary/40 hover:shadow-card"
                 }`}
               >
-                <div
-                  className={`font-display font-extrabold text-sm truncate ${
-                    active ? "text-primary-foreground" : "text-primary"
-                  }`}
-                >
+                <div className={`font-display font-extrabold text-sm truncate ${active ? "text-primary-foreground" : "text-primary"}`}>
                   {f.name.length > 20 ? f.name.slice(0, 18) + "…" : f.name}
                 </div>
                 {f.description && (
-                  <div
-                    className={`text-[10px] mt-0.5 truncate leading-snug ${
-                      active ? "text-primary-foreground/70" : "text-muted-foreground"
-                    }`}
-                  >
+                  <div className={`text-[10px] mt-0.5 truncate leading-snug ${active ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
                     {f.description.length > 40 ? f.description.slice(0, 38) + "…" : f.description}
                   </div>
                 )}
@@ -1262,7 +1217,7 @@ function MessageRow({
           : "hover:bg-muted/40 -mx-2 px-2 py-1"
       }`}
     >
-      <Avatar color={colorFromId(message.authorId)} name={message.authorName} />
+      <Avatar color={colorFor(message.authorId)} name={message.authorName} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-semibold text-sm text-foreground">{message.authorName}</span>
@@ -1372,7 +1327,6 @@ function MessageRow({
         )}
       </div>
 
-      {/* Timestamp column — always same X regardless of message type */}
       <div className="flex-shrink-0 flex flex-col items-end gap-0.5 pt-0.5">
         <span className="text-[11px] text-muted-foreground tabular-nums">{time}</span>
         {message.editedAt && !editing && (
